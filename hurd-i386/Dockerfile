@@ -1,2 +1,1 @@
-FROM scratch
-ADD rootfs.tar.xz /
+FROM multiarch/busybox:hurd-i386-slim

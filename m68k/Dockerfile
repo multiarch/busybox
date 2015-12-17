@@ -1,2 +1,1 @@
-FROM scratch
-ADD rootfs.tar.xz /
+FROM multiarch/busybox:m68k-slim

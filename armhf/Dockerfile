@@ -1,2 +1,2 @@
-FROM scratch
-ADD rootfs.tar.xz /
+FROM multiarch/busybox:armhf-slim
+ADD qemu-arm-static.tar.xz /usr/bin

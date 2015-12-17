@@ -1,23 +1,23 @@
 #!/bin/sh
 
-ARCHS="alpha amd64 arm64 armel armhf hppa hurd-i386 i386 kfreebsd-amd64 kfreebsd-i386 m68k mips mipsel powerpc powerpcspe ppc64 ppc64el s390x sh4 sparc64 x32"
+ARCHS=${ARCHS:-"alpha amd64 arm64 armel armhf hppa hurd-i386 i386 kfreebsd-amd64 kfreebsd-i386 m68k mips mipsel powerpc powerpcspe ppc64 ppc64el s390x sh4 sparc64 x32"}
 
 set -e
 
 for arch in ${ARCHS}; do
-    mkdir -p "${arch}"
+    mkdir -p "${arch}/slim"
 
     # arch
     if [ ! -f "${arch}/arch" ]; then
 	echo "${arch}" > "${arch}/arch"
     fi
-    realarch=$(cat "${arch}/arch")
+    qemu_arch=$(cat "${arch}/qemu_arch")
 
     # deb
     if [ ! -f "${arch}/deb" ]; then
 	(
 	    set -x
-	    curl -s https://packages.debian.org/sid/alpha/busybox-static/download | tr '"' "\n" | grep -E "http://.*alpha\\.deb" > "${arch}/deb"
+	    curl -s https://packages.debian.org/sid/${arch}/busybox-static/download | tr '"' "\n" | grep -E "http://.*${arch}\\.deb" > "${arch}/deb"
 	)
     fi
     deb=$(head -n 1 "${arch}/deb")
@@ -31,22 +31,21 @@ for arch in ${ARCHS}; do
     fi
 
     # extract /bin/busybox
-    if [ ! -f "${arch}/rootfs/bin/busybox" ]; then
+    if [ ! -f "${arch}/slim/rootfs/bin/busybox" ]; then
 	(
 	    cd "${arch}"
 	    set -x
 	    ar vx busybox-static.deb data.tar.xz data.tar.gz
 	    tar --strip=2 -xvf data.tar.* ./bin/busybox
-	    mkdir -p ./rootfs/bin
-	    mv ./busybox ./rootfs/bin/
+	    mkdir -p ./slim/rootfs/bin
+	    mv ./busybox ./slim/rootfs/bin/
 	)
     fi
 
     # create symlinks
-    if [ ! -f "${arch}/rootfs/bin/ls" ]; then
+    if [ ! -f "${arch}/slim/rootfs/bin/ls" ]; then
 	(
-	    cd "${arch}/rootfs"
-	    set -x
+	    cd "${arch}/slim/rootfs"
 	    echo "This need binfmt to be configured"
 	    echo "  docker run --rm --privileged multiarch/qemu-user-static:register --reset."
 	    for module in $("./bin/busybox" --list-modules); do
@@ -57,9 +56,9 @@ for arch in ${ARCHS}; do
     fi
 
     # create dirs and files
-    if [ ! -d "${arch}/rootfs/dev" ]; then
+    if [ ! -d "${arch}/slim/rootfs/dev" ]; then
 	(
-	    cd "${arch}/rootfs"
+	    cd "${arch}/slim/rootfs"
 	    set -x
 	    mkdir -p bin etc dev dev/pts lib proc sys tmp
 	    cp /etc/nsswitch.conf etc/nsswitch.conf
@@ -69,19 +68,33 @@ for arch in ${ARCHS}; do
     fi
 
     # create archive
-    if [ ! -f "${arch}/rootfs.tar.xz" ]; then
+    if [ ! -f "${arch}/slim/rootfs.tar.xz" ]; then
 	(
-	    cd "${arch}/rootfs"
+	    cd "${arch}/slim/rootfs"
 	    set -x
 	    tar --numeric-owner -cJf ../rootfs.tar.xz .
 	)
     fi
+    
+    if [ -n "${qemu_arch}" -a ! -f "${arch}/qemu-${qemu_arch}-static.tar.xz" ]; then
+	wget https://github.com/multiarch/qemu-user-static/releases/download/v2.0.0/amd64_qemu-${qemu_arch}-static.tar.xz -O "${arch}/qemu-${qemu_arch}-static.tar.xz"
+    fi
 
     # create Dockerifle
-    if [ ! -f "${arch}/Dockerfile" ]; then
-	cat > "${arch}/Dockerfile" <<EOF
+    cat > "${arch}/slim/Dockerfile" <<EOF
 FROM scratch
 ADD rootfs.tar.xz /
+CMD ["/bin/sh"]
+ENV ARCH=${arch}
+EOF
+    if [ "${qemu_arch}" = "" ]; then
+	cat > "${arch}/Dockerfile" <<EOF
+FROM multiarch/busybox:${arch}-slim
+EOF
+    else
+	cat > "${arch}/Dockerfile" <<EOF
+FROM multiarch/busybox:${arch}-slim
+ADD qemu-${qemu_arch}-static.tar.xz /usr/bin
 EOF
     fi
 
@@ -97,21 +110,24 @@ EOF
     # info
     echo "======================="
     echo "arch=$arch"
-    echo "realarch=$arch"
+    echo "qemu_arch=$qemu_arch"
     echo "deb=$deb"
     (
 	set -x
 	ls -la "${arch}/busybox-static.deb"
-	du -hs "${arch}/rootfs"
-	find "${arch}/rootfs" -type f | wc -l
-	ls -la "${arch}/rootfs.tar.xz"
+	du -hs "${arch}/slim/rootfs"
+	find "${arch}/slim/rootfs" -type f | wc -l
+	ls -la "${arch}/slim/rootfs.tar.xz"
     )
 
     # build & test
     (
 	set -x
+	docker build -t "multiarch/busybox:${arch}-slim" "${arch}/slim"
 	docker build -t "multiarch/busybox:${arch}" "${arch}"
-	# docker run -it --rm "multiarch/busybox:${arch}" uname -a
+	if [ -n "${qemu_arch}" -o "${arch}" = "amd64" ]; then
+	    docker run -it --rm "multiarch/busybox:${arch}" uname -a
+	fi
     )
 
 done
